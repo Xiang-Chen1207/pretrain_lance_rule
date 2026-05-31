@@ -21,7 +21,7 @@ backend = "local"
 uri = ""
 
 [schema]
-primary_key = "sample_id"
+primary_key = ["table_id", "sample_id"]
 data_column = "data"
 
 [[schema.columns]]
@@ -29,7 +29,21 @@ name = "sample_id"
 type = "string"
 required = true
 nullable = false
-description = "Globally unique stable sample identifier across all pretraining tables."
+description = "Stable sample identifier unique within table_id for partitioned pretraining datasets."
+
+[[schema.columns]]
+name = "table_id"
+type = "string"
+required = true
+nullable = false
+description = "Physical signal table identifier matching [[pretrain.tables]].table_id."
+
+[[schema.columns]]
+name = "sample_uid"
+type = "string"
+required = false
+nullable = true
+description = "Optional globally unique sample key derived from table_id and sample_id."
 
 [[schema.columns]]
 name = "subject_id"
@@ -192,7 +206,9 @@ qc_pass_values = [true, false]
 
 [pretrain]
 pretrain_type = "self_supervised"
-sample_id_scope = "global"
+sample_id_scope = "table_local"
+sample_key_columns = ["table_id", "sample_id"]
+sample_uid_column = "sample_uid"
 source_dataset_column = "source_dataset_id"
 recording_id_column = "recording_id"
 preprocess_version = "preprocess-v1"

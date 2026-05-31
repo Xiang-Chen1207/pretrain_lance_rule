@@ -39,7 +39,8 @@ package.
 The current version incorporates the external CLI review suggestions:
 
 - partitioned pretraining datasets use the `__partitioned__` storage sentinel;
+- partitioned pretraining datasets may use table-local `sample_id` values, with `(table_id, sample_id)` as the authoritative global sample key;
 - required pretraining fields are physical Lance columns, not virtual reader fields;
 - row-level `preprocess_version` and `feature_version` are authoritative;
-- feature alignment uses `sample_id` or explicit `row_index`, not implicit row order;
+- feature alignment uses `sample_id`, `sample_key`, `sample_uid`, or explicit `row_index`, not implicit row order;
 - `split_policy`, `access_level`, and channel profile layout semantics are explicit.

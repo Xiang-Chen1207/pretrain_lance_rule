@@ -21,7 +21,9 @@ pretraining dataset review.
 - [ ] `dataset.task_type = "pretraining"`.
 - [ ] `[pretrain]` exists.
 - [ ] `pretrain.pretrain_type` is one of `self_supervised`, `supervised`, `multi_objective`, or `contrastive`.
-- [ ] `pretrain.sample_id_scope = "global"` for released datasets.
+- [ ] `pretrain.sample_id_scope` is one of `global` or `table_local`.
+- [ ] If `pretrain.sample_id_scope = "table_local"`, `pretrain.sample_key_columns = ["table_id", "sample_id"]`.
+- [ ] If `pretrain.sample_id_scope = "table_local"`, `schema.primary_key = ["table_id", "sample_id"]`.
 - [ ] `pretrain.source_dataset_column` names an existing physical signal-table column.
 - [ ] `pretrain.recording_id_column` names an existing physical signal-table column.
 - [ ] `pretrain.preprocess_version` exists and is treated as the default or primary preprocessing version.
@@ -33,7 +35,10 @@ pretraining dataset review.
 - [ ] Every required base column exists physically in each released signal table: `sample_id`, `subject_id`, `modality`, `data`, `shape`, `original_shape`, `valid_length`, and `qc_pass`.
 - [ ] Every required pretraining column exists physically in each released signal table: `source_dataset_id`, `recording_id`, `source_path`, `start_time`, `duration`, `split`, and `preprocess_version`.
 - [ ] `sample_id` values are non-empty stable strings.
-- [ ] `sample_id` values are globally unique across all declared signal tables.
+- [ ] If `pretrain.sample_id_scope = "global"`, `sample_id` values are globally unique across all declared signal tables.
+- [ ] If `pretrain.sample_id_scope = "table_local"`, `sample_id` values are unique within each signal table and `(table_id, sample_id)` is the authoritative global sample key.
+- [ ] If a physical `table_id` column exists in a signal table, every value matches the enclosing `[[pretrain.tables]].table_id`.
+- [ ] If `pretrain.sample_uid_column` is declared, the named column is present and globally unique or explicitly documented as a derived reader field.
 - [ ] Row-level `preprocess_version` is authoritative when it differs from `[pretrain].preprocess_version`.
 - [ ] If `[pretrain.sampling].weight_column` is declared, the named column exists in every signal table used by the sampler.
 
@@ -48,11 +53,15 @@ pretraining dataset review.
 ## Table And Feature Checks
 
 - [ ] Every declared `[[pretrain.tables]]` entry has `table_id`, `role`, `lance_path`, and `n_samples`.
+- [ ] Every declared `[[pretrain.tables]].table_id` is unique inside the dataset.
 - [ ] Every declared table path resolves and row count matches `n_samples`.
 - [ ] Feature tables declare `view_id`, `aligned_to`, and `alignment`.
-- [ ] Feature alignment is `sample_id` or explicit `row_index`.
+- [ ] Feature alignment is `sample_id`, `sample_key`, `sample_uid`, or explicit `row_index`.
 - [ ] Feature tables using `alignment = "sample_id"` contain `sample_id`.
+- [ ] Feature tables using `alignment = "sample_key"` contain `signal_table_id` and `sample_id`.
+- [ ] Feature tables using `alignment = "sample_uid"` contain the declared `sample_uid` column.
 - [ ] Feature tables using `alignment = "row_index"` contain `row_index`.
+- [ ] Under `sample_id_scope = "table_local"`, feature tables using `alignment = "sample_id"` declare exactly one `aligned_to` signal table.
 - [ ] Pure implicit row-order alignment is not used for released datasets.
 - [ ] Row-level `feature_version` is authoritative when it differs from the feature-view-level default.
 

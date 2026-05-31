@@ -30,6 +30,7 @@ reasonable, but several ambiguities needed to be fixed before sharing the rule.
 
 ## Remaining Implementation Notes
 
-- The specification requires exact global `sample_id` uniqueness. Large datasets should implement this with a scalable validator, such as hash partitioning or an external-sort pass.
+- The current specification allows partitioned datasets to use `sample_id_scope = "table_local"`. Validators should check table-level `sample_id` uniqueness and use `(table_id, sample_id)` as the authoritative global key.
+- Datasets may materialize `sample_uid` for convenient logging, indexing, or external lookup, but `sample_uid` is not the authoritative key in `table_local` mode.
 - The rule allows new `source_family` values without changing the spec. Platform validators may still maintain local registries for known families.
 - The preview folder is for review convenience; canonical source of truth remains the normal repo files under `rules/`, `schemas/`, `examples/`, and `validation/`.

@@ -18,6 +18,8 @@ description = "Initial EEG pretraining conversion with TUH and OpenNeuro-style s
 affected_rows = 9412029
 affected_columns = [
   "sample_id",
+  "table_id",
+  "sample_uid",
   "subject_id",
   "source_dataset_id",
   "recording_id",

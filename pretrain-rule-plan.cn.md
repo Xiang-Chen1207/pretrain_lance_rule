@@ -28,7 +28,7 @@ Pretrain 数据集仍然复用以下基础约定：
 Pretrain 数据集新增 `[pretrain]` 扩展段，用来声明下游单任务数据集通常不需要的信息：
 
 - 多 source dataset 来源，例如 `tuh`、`ds004395`；
-- 全局唯一稳定的 `sample_id`；
+- 分区表友好的样本键：`sample_id` 可表内唯一，全局键为 `(table_id, sample_id)`；
 - source 级别的 `source_dataset_id`、`recording_id`、`source_path`；
 - window 级别的 `start_time`、`duration`、`split`、`preprocess_version`；
 - EEG channel profile，用于 TUH 与 OpenNeuro 等不同通道空间；
@@ -59,7 +59,32 @@ lance_path = "__partitioned__"
 
 `__partitioned__` 表示 reader 和 validator 必须从 `[[pretrain.tables]]` 中所有 `role = "signal"` 的表解析逻辑 signal table。
 
-### 4.2 必需字段必须是物理列
+### 4.2 样本主键使用 table-local 复合键
+
+分区 pretrain 不再强制 `sample_id` 跨所有物理表全局唯一。推荐声明：
+
+```toml
+[schema]
+primary_key = ["table_id", "sample_id"]
+
+[pretrain]
+sample_id_scope = "table_local"
+sample_key_columns = ["table_id", "sample_id"]
+sample_uid_column = "sample_uid"
+```
+
+在该模式下，`sample_id` 只需要在当前 `table_id` 内唯一，全局唯一样本键是
+`(table_id, sample_id)`。`table_id` 必须与 `[[pretrain.tables]].table_id`
+一致。为了检索、日志和外部索引方便，数据集可以可选物化：
+
+```text
+sample_uid = "{table_id}:{sample_id}"
+```
+
+这保持了与 downstream 的统一性：downstream 和单表 pretrain 可以继续使用
+`primary_key = "sample_id"`，它们等价于隐式 `table_id = "dataset"` 的单表特例。
+
+### 4.3 必需字段必须是物理列
 
 为了让 validator 可以稳定落地，规则不再使用 "contain or expose" 这类虚拟 reader 语义。每个发布的 signal 表必须包含物理列：
 
@@ -75,22 +100,24 @@ preprocess_version
 
 EEG 行还必须包含非空且已声明的 `channel_profile`。多模态预训练中的非 EEG 行可以把 `channel_profile` 置为 null 或空字符串。
 
-### 4.3 行级版本是 ground truth
+### 4.4 行级版本是 ground truth
 
 `[pretrain].preprocess_version` 是默认或主要 pipeline 版本。每行的 `preprocess_version` 列才是精确 ground truth。
 
 Feature view 同理：`[[pretrain.feature_views]].feature_version` 是默认值，feature 表中的行级 `feature_version` 优先级更高。
 
-### 4.4 Feature 对齐不使用隐式 row order
+### 4.5 Feature 对齐不使用隐式 row order
 
 Feature table 只能用两种方式对齐 signal table：
 
-- `alignment = "sample_id"`：feature 表包含同一批 `sample_id`；
+- `alignment = "sample_id"`：feature 表包含同一批 `sample_id`，仅在对齐单个 signal 表时无歧义；
+- `alignment = "sample_key"`：feature 表包含 `signal_table_id` 和 `sample_id`，引用 signal 表中的 `(table_id, sample_id)`；
+- `alignment = "sample_uid"`：feature 表包含物化的全局 `sample_uid`；
 - `alignment = "row_index"`：feature 表包含显式 `row_index` 外键，引用 `aligned_to` signal 表行索引。
 
 发布数据集不得使用纯隐式 row-order 对齐，避免静默错位。
 
-### 4.5 Split policy 是闭集
+### 4.6 Split policy 是闭集
 
 `split_policy` 必须是以下值之一：
 
@@ -139,7 +166,7 @@ custom_declared
 ## 6. 新增 pretrain dataset 的流程
 
 1. 确定 source dataset 列表和 source ID 命名，例如 `tuh`、`ds004395`。
-2. 为每个样本生成跨所有物理表全局唯一的 `sample_id`。
+2. 为每个样本生成表内唯一的 `sample_id`，并用 `table_id` 组成全局键 `(table_id, sample_id)`。
 3. 写入基础必需列和 pretrain 必需物理列。
 4. 根据 EEG 通道空间定义 `[[pretrain.channel_profiles]]`。
 5. 如果数据量或通道 profile 需要分区，声明所有 `[[pretrain.tables]]`，并把 `[storage]` 写成 `__partitioned__`。
@@ -150,8 +177,8 @@ custom_declared
 
 ## 7. 仍需实现的配套工作
 
-- 在实际 validator 中实现分区表打开、row count 汇总、全局 `sample_id` 去重；
+- 在实际 validator 中实现分区表打开、row count 汇总、表内 `sample_id` 去重和 `(table_id, sample_id)` 全局键校验；
 - 在 reader 中把 `__partitioned__` 解析为多个 signal tables 的逻辑 union；
 - 在 sampler 中读取 `[pretrain.sampling]`，支持 source balance 和 `sample_weight`；
-- 为 feature view 实现 `sample_id` 或显式 `row_index` 对齐检查；
+- 为 feature view 实现 `sample_id`、`sample_key`、`sample_uid` 或显式 `row_index` 对齐检查；
 - 针对大规模数据，把全局唯一性校验实现为可外排或分片的算法。

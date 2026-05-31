@@ -44,10 +44,28 @@ valid_length
 qc_pass
 ```
 
-For pretraining, `sample_id` MUST be a globally unique stable string across all
-physical tables in the logical dataset. If a source table contains a local row
-identifier, it SHOULD be stored as `source_sample_id` or `local_sample_id`, not
-used as the primary key.
+For single-table pretraining datasets, `sample_id` SHOULD remain a globally
+unique stable string, matching the downstream convention.
+
+For partitioned pretraining datasets, `sample_id` MAY be table-local when:
+
+```toml
+[pretrain]
+sample_id_scope = "table_local"
+sample_key_columns = ["table_id", "sample_id"]
+```
+
+In `table_local` mode, the globally unique sample key is the compound key
+`(table_id, sample_id)`. `table_id` MUST match the
+`[[pretrain.tables]].table_id` of the physical signal table, and `sample_id`
+MUST be unique within that table. A dataset MAY materialize `sample_uid` as a
+globally unique string derived from `table_id` and `sample_id`, for example
+`"tuh_train:000000001"`, but validators MUST treat `(table_id, sample_id)` as
+the authoritative key when `sample_id_scope = "table_local"`.
+
+If a source table contains an original local row identifier, it SHOULD be stored
+as `source_sample_id` or `local_sample_id`, not used as the pretraining sample
+key unless it also satisfies the declared sample key contract.
 
 Pretraining datasets SHOULD set:
 
@@ -138,7 +156,8 @@ Required `[pretrain]` fields:
 | Field | Type | Required | Description |
 |---|---|---:|---|
 | `pretrain_type` | string | Yes | `self_supervised`, `supervised`, `multi_objective`, or `contrastive` |
-| `sample_id_scope` | string | Yes | MUST be `global` for released datasets |
+| `sample_id_scope` | string | Yes | `global` or `table_local` |
+| `sample_key_columns` | array[string] | Conditional | Required when `sample_id_scope = "table_local"`; SHOULD be `["table_id", "sample_id"]` |
 | `source_dataset_column` | string | Yes | Column containing the source dataset ID |
 | `recording_id_column` | string | Yes | Column identifying the source recording |
 | `preprocess_version` | string | Yes | Default or primary preprocessing pipeline version. Row-level `preprocess_version` is the ground truth. |
@@ -150,7 +169,19 @@ Recommended `[pretrain]` fields:
 objective_family = "masked_prediction"
 feature_view_ids = ["npd_v1"]
 sampling_policy = "balanced_by_source"
+sample_uid_column = "sample_uid"
 ```
+
+When `sample_id_scope = "table_local"`, `[schema].primary_key` MUST be:
+
+```toml
+[schema]
+primary_key = ["table_id", "sample_id"]
+```
+
+This is a pretraining extension of the base downstream convention
+`primary_key = "sample_id"`. Single-table pretraining datasets SHOULD keep the
+base convention unless they intentionally use table-local keys.
 
 ## 5. Required Pretraining Columns
 
@@ -172,6 +203,8 @@ Recommended columns:
 
 | Column | Type | Description |
 |---|---|---|
+| `table_id` | string | Physical table identifier; recommended for partitioned datasets and required as an available reader field when `sample_id_scope = "table_local"` |
+| `sample_uid` | string | Optional materialized globally unique sample key derived from `table_id` and `sample_id` |
 | `subject_uid` | string | Stable subject identifier scoped across sources |
 | `recording_uid` | string | Stable recording identifier scoped across sources |
 | `source_sample_id` | string/int64 | Source-local sample ID |
@@ -248,7 +281,7 @@ Required fields:
 
 | Field | Type | Required | Description |
 |---|---|---:|---|
-| `table_id` | string | Yes | Stable table identifier |
+| `table_id` | string | Yes | Stable table identifier. Values MUST be unique inside one pretraining dataset. |
 | `role` | string | Yes | `signal`, `feature`, `index`, or `manifest` |
 | `lance_path` | string | Yes | Relative or absolute Lance path |
 | `n_samples` | int | Yes | Row count |
@@ -265,10 +298,20 @@ aligned_to = "openneuro_slot136_train"
 alignment = "sample_id"
 ```
 
-`alignment` MUST be one of `sample_id` or `row_index`.
+`alignment` MUST be one of `sample_id`, `sample_key`, `sample_uid`, or
+`row_index`.
 
 If `alignment = "sample_id"`, the feature table MUST contain the same
-`sample_id` values as its aligned signal table.
+`sample_id` values as its aligned signal table. In `table_local` mode this is
+unambiguous only when `aligned_to` names exactly one signal table.
+
+If `alignment = "sample_key"`, the feature table MUST contain `signal_table_id`
+and `sample_id`; together they reference `(table_id, sample_id)` in the aligned
+signal tables. `sample_key` SHOULD be used when one feature table mixes samples
+from multiple signal tables under `sample_id_scope = "table_local"`.
+
+If `alignment = "sample_uid"`, the feature table MUST contain the materialized
+`sample_uid` column declared by `[pretrain].sample_uid_column`.
 
 If `alignment = "row_index"`, the feature table MUST contain an explicit
 `row_index` column whose values reference row indexes in the declared
@@ -298,8 +341,10 @@ Feature tables MUST contain:
 sample_id
 ```
 
-when `alignment = "sample_id"`. Feature tables MUST contain `row_index` when
-`alignment = "row_index"`.
+when `alignment = "sample_id"`. Feature tables MUST contain `signal_table_id`
+and `sample_id` when `alignment = "sample_key"`. Feature tables MUST contain
+`sample_uid` when `alignment = "sample_uid"`. Feature tables MUST contain
+`row_index` when `alignment = "row_index"`.
 
 Feature tables MUST also contain `feature_version`, or declare a single feature
 version in `[[pretrain.feature_views]]`. A row-level `feature_version` is
@@ -381,13 +426,17 @@ table used by the sampler.
 
 Pretraining validation MUST include all base dataset validation checks plus:
 
-- `sample_id` is globally unique across all declared signal tables.
+- If `sample_id_scope = "global"`, `sample_id` is globally unique across all
+  declared signal tables.
+- If `sample_id_scope = "table_local"`, each declared signal table has a unique
+  `table_id`, `sample_id` is unique within each signal table, and the compound
+  key `(table_id, sample_id)` is the authoritative global sample key.
 - All declared `[[pretrain.sources]]` IDs appear in rows or are explicitly marked
   unused.
 - All declared `[[pretrain.tables]]` paths exist and row counts match.
 - Signal table rows contain required pretraining columns.
-- Feature views are aligned to signal tables by `sample_id` or explicit
-  `row_index`.
+- Feature views are aligned to signal tables by `sample_id`, `sample_key`,
+  `sample_uid`, or explicit `row_index`.
 - Split policy is declared and verified at the subject or recording level when
   the required columns are present.
 - EEG `channel_profile` values are declared and their channel counts match the

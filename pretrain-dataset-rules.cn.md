@@ -40,7 +40,26 @@ valid_length
 qc_pass
 ```
 
-对于预训练数据集，`sample_id` MUST 是跨所有物理表全局唯一、稳定的字符串。如果源表里存在局部行 ID，SHOULD 存储为 `source_sample_id` 或 `local_sample_id`，不得作为主键。
+对于单表预训练数据集，`sample_id` SHOULD 继续是全局唯一、稳定的字符串，
+与下游规范保持一致。
+
+对于分区预训练数据集，当如下声明存在时，`sample_id` MAY 只在表内唯一：
+
+```toml
+[pretrain]
+sample_id_scope = "table_local"
+sample_key_columns = ["table_id", "sample_id"]
+```
+
+在 `table_local` 模式下，全局唯一样本键是复合键
+`(table_id, sample_id)`。`table_id` MUST 与该物理 signal 表对应的
+`[[pretrain.tables]].table_id` 一致，`sample_id` MUST 在该表内唯一。数据集
+MAY 物化一个全局唯一字符串 `sample_uid`，例如
+`"tuh_train:000000001"`，但当 `sample_id_scope = "table_local"` 时，
+validator MUST 将 `(table_id, sample_id)` 视为权威样本键。
+
+如果源表里存在原始局部行 ID，SHOULD 存储为 `source_sample_id` 或
+`local_sample_id`；除非它也满足声明的样本键契约，否则不得作为预训练样本键。
 
 预训练数据集 SHOULD 设置：
 
@@ -122,7 +141,8 @@ lance_path = "__partitioned__"
 | Field | Type | Required | Description |
 |---|---|---:|---|
 | `pretrain_type` | string | Yes | `self_supervised`、`supervised`、`multi_objective` 或 `contrastive` |
-| `sample_id_scope` | string | Yes | 发布数据集 MUST 为 `global` |
+| `sample_id_scope` | string | Yes | `global` 或 `table_local` |
+| `sample_key_columns` | array[string] | Conditional | 当 `sample_id_scope = "table_local"` 时必需；SHOULD 为 `["table_id", "sample_id"]` |
 | `source_dataset_column` | string | Yes | 存储 source dataset ID 的列 |
 | `recording_id_column` | string | Yes | 标识源 recording 的列 |
 | `preprocess_version` | string | Yes | 默认或主要预处理 pipeline 版本；行级 `preprocess_version` 是 ground truth |
@@ -134,7 +154,18 @@ lance_path = "__partitioned__"
 objective_family = "masked_prediction"
 feature_view_ids = ["npd_v1"]
 sampling_policy = "balanced_by_source"
+sample_uid_column = "sample_uid"
 ```
+
+当 `sample_id_scope = "table_local"` 时，`[schema].primary_key` MUST 写为：
+
+```toml
+[schema]
+primary_key = ["table_id", "sample_id"]
+```
+
+这是对下游基础约定 `primary_key = "sample_id"` 的预训练扩展。单表预训练数据集
+SHOULD 继续使用基础约定，除非明确需要 table-local key。
 
 ## 5. 必需预训练列
 
@@ -155,6 +186,8 @@ sampling_policy = "balanced_by_source"
 
 | Column | Type | Description |
 |---|---|---|
+| `table_id` | string | 物理表 ID；分区数据集推荐物理存储，且当 `sample_id_scope = "table_local"` 时 MUST 作为 reader 可用字段 |
+| `sample_uid` | string | 可选物化全局唯一样本键，由 `table_id` 和 `sample_id` 派生 |
 | `subject_uid` | string | 跨 source 作用域稳定 subject ID |
 | `recording_uid` | string | 跨 source 作用域稳定 recording ID |
 | `source_sample_id` | string/int64 | source-local sample ID |
@@ -230,7 +263,7 @@ n_samples = 185315
 
 | Field | Type | Required | Description |
 |---|---|---:|---|
-| `table_id` | string | Yes | 稳定表 ID |
+| `table_id` | string | Yes | 稳定表 ID；同一个预训练数据集内 MUST 唯一 |
 | `role` | string | Yes | `signal`、`feature`、`index` 或 `manifest` |
 | `lance_path` | string | Yes | 相对或绝对 Lance 路径 |
 | `n_samples` | int | Yes | 行数 |
@@ -247,9 +280,20 @@ aligned_to = "openneuro_slot136_train"
 alignment = "sample_id"
 ```
 
-`alignment` MUST 是 `sample_id` 或 `row_index`。
+`alignment` MUST 是 `sample_id`、`sample_key`、`sample_uid` 或
+`row_index`。
 
-如果 `alignment = "sample_id"`，feature 表 MUST 包含与其对齐 signal 表相同的 `sample_id` 集合。
+如果 `alignment = "sample_id"`，feature 表 MUST 包含与其对齐 signal 表相同的
+`sample_id` 集合。在 `table_local` 模式下，只有当 `aligned_to` 明确指向一个
+signal 表时，这种对齐才没有歧义。
+
+如果 `alignment = "sample_key"`，feature 表 MUST 包含 `signal_table_id` 和
+`sample_id`；二者共同引用对齐 signal 表中的 `(table_id, sample_id)`。当
+`sample_id_scope = "table_local"` 且一个 feature 表混合多个 signal 表的样本时，
+SHOULD 使用 `sample_key`。
+
+如果 `alignment = "sample_uid"`，feature 表 MUST 包含由
+`[pretrain].sample_uid_column` 声明的物化 `sample_uid` 列。
 
 如果 `alignment = "row_index"`，feature 表 MUST 包含显式 `row_index` 列，且该列值引用声明的 `aligned_to` signal 表中的行索引。发布数据集 MUST NOT 使用纯隐式 row-order 对齐。
 
@@ -275,8 +319,9 @@ Feature 表 MUST 包含：
 sample_id
 ```
 
-当 `alignment = "sample_id"` 时。Feature 表在 `alignment = "row_index"`
-时 MUST 包含 `row_index`。
+当 `alignment = "sample_id"` 时。Feature 表在 `alignment = "sample_key"` 时
+MUST 包含 `signal_table_id` 和 `sample_id`；在 `alignment = "sample_uid"` 时
+MUST 包含 `sample_uid`；在 `alignment = "row_index"` 时 MUST 包含 `row_index`。
 
 Feature 表还 MUST 包含 `feature_version`，或在 `[[pretrain.feature_views]]`
 中声明单一 feature version。当行级 `feature_version` 与 feature-view 级默认值不同时，以行级值为准。
@@ -347,11 +392,15 @@ weight_column = "sample_weight"
 
 预训练校验 MUST 包含所有基础数据集校验，并额外检查：
 
-- `sample_id` 在所有声明的 signal 表中全局唯一。
+- 如果 `sample_id_scope = "global"`，`sample_id` 在所有声明的 signal 表中全局唯一。
+- 如果 `sample_id_scope = "table_local"`，每个声明的 signal 表有唯一
+  `table_id`，`sample_id` 在各自表内唯一，且复合键 `(table_id, sample_id)`
+  是权威全局样本键。
 - 所有声明的 `[[pretrain.sources]]` ID 都出现在行中，或被显式标记为 unused。
 - 所有声明的 `[[pretrain.tables]]` 路径存在，且行数匹配。
 - Signal 表行包含必需预训练物理列。
-- Feature views 按 `sample_id` 或显式 `row_index` 与 signal 表对齐。
+- Feature views 按 `sample_id`、`sample_key`、`sample_uid` 或显式
+  `row_index` 与 signal 表对齐。
 - split policy 已声明；当相应列存在时，按 subject 或 recording 级别验证。
 - EEG `channel_profile` 值均已声明，且其通道数与恢复 shape 匹配。
 - 当 source 分布被有意重加权时，sampling policy 已声明。
